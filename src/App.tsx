@@ -21,6 +21,7 @@ import {
   Info 
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { removeBackground } from "@imgly/background-removal";
 
 import { 
   UNIFORM_TEMPLATES, 
@@ -34,6 +35,8 @@ import {
 import { ActiveSticker, KidLicenseInfo, ApplicationMode } from "./types";
 import { sfx } from "./utils/audio";
 import { PoliceUniform } from "./components/PoliceUniform";
+
+const SKY_BLUE_PHOTO_BACKGROUND = "#bae6fd";
 
 const renderStickerIcon = (stickerId: string, emoji: string) => {
   if (stickerId === "hat_blue") {
@@ -104,6 +107,7 @@ export default function App() {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isRemovingBackground, setIsRemovingBackground] = useState(false);
   
   // Photo positioning (Aligning kid face under uniform)
   const [photoPos, setPhotoPos] = useState({ x: 0, y: 0 });
@@ -135,6 +139,7 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
 
   // Auto-generate fresh Badge Number & Date
   const getTodayString = () => {
@@ -157,17 +162,69 @@ export default function App() {
     if (type === 'success') sfx.playSuccess();
   };
 
+  const removePhotoBackgroundToSkyBlue = async (sourceUrl: string) => {
+    try {
+      const cutoutBlob = await removeBackground(sourceUrl, {
+        model: "isnet_quint8",
+        output: { format: "image/png", quality: 0.9 },
+      });
+      const cutout = await createImageBitmap(cutoutBlob);
+      const canvas = document.createElement("canvas");
+      canvas.width = cutout.width;
+      canvas.height = cutout.height;
+      const ctx = canvas.getContext("2d");
+
+      if (!ctx) {
+        return sourceUrl;
+      }
+
+      ctx.fillStyle = SKY_BLUE_PHOTO_BACKGROUND;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(cutout, 0, 0);
+      cutout.close();
+
+      return canvas.toDataURL("image/png");
+    } catch (error) {
+      console.warn("Background removal failed; using original photo.", error);
+      return sourceUrl;
+    }
+  };
+
+  const preparePhotoForDecoration = async (sourceUrl: string) => {
+    setIsRemovingBackground(true);
+    const processedUrl = await removePhotoBackgroundToSkyBlue(sourceUrl);
+    setPhotoUrl(processedUrl);
+    
+    // Reset base photo alignment sliders
+    setPhotoPos({ x: 0, y: 0 });
+    setPhotoScale(1.1); // default zoom in slightly for circular fit
+    setPhotoRotation(0);
+    
+    // Clear old decorations
+    setStickers([]);
+    setFocusedStickerId(null);
+    
+    setIsRemovingBackground(false);
+    triggerSound('success');
+    setMode("decorate");
+  };
+
   // Start/Stop Camera Streams
   const startCamera = async () => {
     setCameraError(null);
+    stopCamera();
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 640 } },
         audio: false
       });
+      streamRef.current = mediaStream;
       setStream(mediaStream);
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
+        await videoRef.current.play().catch(() => {
+          // Some mobile browsers resolve camera permission before video playback is ready.
+        });
       }
     } catch (err: any) {
       console.warn("Camera failed to start in iframe context:", err);
@@ -176,10 +233,14 @@ export default function App() {
   };
 
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setStream(null);
   };
 
   // Triggers Camera Start on photo step
@@ -208,7 +269,7 @@ export default function App() {
   }, [countdown]);
 
   // Capture video frame to image state
-  const capturePhoto = () => {
+  const capturePhoto = async () => {
     if (videoRef.current) {
       triggerSound('shutter');
       setIsFlash(true);
@@ -232,21 +293,7 @@ export default function App() {
         ctx.scale(-1, 1);
         
         ctx.drawImage(video, startX, startY, size, size, 0, 0, size, size);
-        setPhotoUrl(canvas.toDataURL("image/png"));
-        
-        // Reset base photo alignment sliders
-        setPhotoPos({ x: 0, y: 0 });
-        setPhotoScale(1.1); // default zoom in slightly for circular fit
-        setPhotoRotation(0);
-        
-        // Clear old decorations
-        setStickers([]);
-        setFocusedStickerId(null);
-        
-        // Move forward after a tiny delay for visual pacing
-        setTimeout(() => {
-          setMode("decorate");
-        }, 300);
+        await preparePhotoForDecoration(canvas.toDataURL("image/png"));
       }
     }
   };
@@ -256,16 +303,9 @@ export default function App() {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          setPhotoUrl(event.target.result as string);
-          setPhotoPos({ x: 0, y: 0 });
-          setPhotoScale(1.1);
-          setPhotoRotation(0);
-          setStickers([]);
-          setFocusedStickerId(null);
-          triggerSound('success');
-          setMode("decorate");
+          await preparePhotoForDecoration(event.target.result as string);
         }
       };
       reader.readAsDataURL(file);
@@ -1519,7 +1559,7 @@ export default function App() {
                     <p className="text-sm font-bold text-slate-200 leading-relaxed mb-4">{cameraError}</p>
                     
                     {/* Instant File Selection */}
-                    <label id="upload_label_trigger" className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-blue-950 font-black text-sm cursor-pointer shadow-md transition-all active:scale-95">
+                    <label id="upload_label_trigger" className={`inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-yellow-400 hover:bg-yellow-300 text-blue-950 font-black text-sm cursor-pointer shadow-md transition-all active:scale-95 ${isRemovingBackground ? "pointer-events-none opacity-60" : ""}`}>
                       <Upload className="w-4 h-4" />
                       <span>내 컴퓨터에서 사진 불러오기</span>
                       <input 
@@ -1575,6 +1615,16 @@ export default function App() {
                   <div className="absolute inset-0 bg-white z-50 animate-fade-out" />
                 )}
 
+                {isRemovingBackground && (
+                  <div className="absolute inset-0 bg-blue-950/90 z-50 flex flex-col items-center justify-center text-center px-6">
+                    <div className="w-16 h-16 rounded-full border-4 border-yellow-400 border-t-transparent animate-spin mb-4" />
+                    <p className="text-yellow-400 text-xl font-black mb-2">배경을 하늘색으로 바꾸는 중...</p>
+                    <p className="text-blue-100 text-xs leading-relaxed">
+                      처음 실행할 때는 AI 모델을 불러오느라 조금 오래 걸릴 수 있어요.
+                    </p>
+                  </div>
+                )}
+
                 {/* Countdown visual overlays */}
                 {countdown > 0 && (
                   <div className="absolute inset-0 bg-black/80 z-30 flex flex-col items-center justify-center">
@@ -1603,7 +1653,7 @@ export default function App() {
                       triggerSound('click');
                       setCountdown(3);
                     }}
-                    disabled={countdown >= 0}
+                    disabled={countdown >= 0 || isRemovingBackground}
                     id="countdown_run_btn"
                     className="flex-1 py-4 bg-blue-700 text-white hover:bg-blue-600 rounded-xl font-black text-lg shadow-lg border-b-4 border-blue-900 active:translate-y-1 active:border-b-0 flex items-center justify-center gap-2 transition-all disabled:opacity-50"
                   >
@@ -1627,7 +1677,7 @@ export default function App() {
               {!cameraError && (
                 <div className="mt-4 border-t border-blue-800 pt-3 text-center">
                   <span className="text-xs text-blue-200 mr-2">직접 찍은 사진이 있나요?</span>
-                  <label className="text-xs text-yellow-400 hover:underline cursor-pointer font-bold inline-flex items-center gap-1 select-none">
+                  <label className={`text-xs text-yellow-400 hover:underline cursor-pointer font-bold inline-flex items-center gap-1 select-none ${isRemovingBackground ? "pointer-events-none opacity-60" : ""}`}>
                     <Upload className="w-3 h-3" />
                     <span>갤러리 파일 선택하기</span>
                     <input 
@@ -2090,6 +2140,14 @@ export default function App() {
                     triggerSound('click');
                     // Reset fields for the next child completely to prevent leakage
                     setChildName("");
+                    setPhotoUrl(null);
+                    setPhotoPos({ x: 0, y: 0 });
+                    setPhotoScale(1.1);
+                    setPhotoRotation(0);
+                    setFocusedStickerId(null);
+                    setCountdown(-1);
+                    setCameraError(null);
+                    setIsRemovingBackground(false);
                     setGeneratedLicenseUrl(null);
                     setStickers([]);
                     setAppointmentType("경찰관");
@@ -2097,7 +2155,7 @@ export default function App() {
                     setSelectedDept("유치원 안전 지킴이");
                     setSelectedCompliment("친구들과 사이좋게 놀고 먼저 차례를 양보하는 착한 마음씨");
                     setBadgeNo(`경찰-2026-${Math.floor(1000 + Math.random() * 9000)}`);
-                    setMode("home");
+                    setMode("photo");
                   }}
                   className="px-6 py-4 bg-blue-700 hover:bg-blue-600 text-white rounded-2xl text-sm font-black border-b-4 border-blue-900 active:translate-y-1 active:border-b-0 transition-all cursor-pointer"
                 >
