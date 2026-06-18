@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { 
   Camera, 
   Download, 
@@ -140,6 +140,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const cameraStartIdRef = useRef(0);
 
   // Auto-generate fresh Badge Number & Date
   const getTodayString = () => {
@@ -209,23 +210,56 @@ export default function App() {
     setMode("decorate");
   };
 
+  const attachCameraToVideo = useCallback((video = videoRef.current) => {
+    const activeStream = streamRef.current;
+    if (!video || !activeStream) return;
+
+    if (video.srcObject !== activeStream) {
+      video.srcObject = activeStream;
+    }
+
+    const playVideo = () => {
+      video.play().catch(() => {
+        // Mobile browsers can briefly reject play while metadata is still settling.
+      });
+    };
+
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      playVideo();
+    } else {
+      video.addEventListener("loadedmetadata", playVideo, { once: true });
+    }
+  }, []);
+
+  const handleCameraVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    videoRef.current = node;
+    if (!node) return;
+
+    node.muted = true;
+    node.playsInline = true;
+    attachCameraToVideo(node);
+  }, [attachCameraToVideo]);
+
   // Start/Stop Camera Streams
   const startCamera = async () => {
     setCameraError(null);
     stopCamera();
+    const cameraStartId = cameraStartIdRef.current + 1;
+    cameraStartIdRef.current = cameraStartId;
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 640 } },
         audio: false
       });
+      if (cameraStartId !== cameraStartIdRef.current) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = mediaStream;
       setStream(mediaStream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = mediaStream;
-        await videoRef.current.play().catch(() => {
-          // Some mobile browsers resolve camera permission before video playback is ready.
-        });
-      }
+      attachCameraToVideo();
+      window.setTimeout(() => attachCameraToVideo(), 50);
+      window.setTimeout(() => attachCameraToVideo(), 250);
     } catch (err: any) {
       console.warn("Camera failed to start in iframe context:", err);
       setCameraError("카메라를 켤 수 없어요! 대신 예쁜 사진 파일을 직접 올려주세요 💖");
@@ -233,6 +267,7 @@ export default function App() {
   };
 
   const stopCamera = () => {
+    cameraStartIdRef.current += 1;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -1573,7 +1608,7 @@ export default function App() {
                 ) : (
                   <>
                     <video
-                      ref={videoRef}
+                      ref={handleCameraVideoRef}
                       autoPlay
                       playsInline
                       muted
