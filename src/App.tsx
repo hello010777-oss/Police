@@ -132,6 +132,7 @@ export default function App() {
   const [countdown, setCountdown] = useState(-1);
   const [isFlash, setIsFlash] = useState(false);
   const [isGeneratingLicense, setIsGeneratingLicense] = useState(false);
+  const [isBackgroundRemovalEnabled, setIsBackgroundRemovalEnabled] = useState(true);
   const [generatedLicenseUrl, setGeneratedLicenseUrl] = useState<string | null>(null);
   const [badgeNo, setBadgeNo] = useState("");
   const [aiLetter, setAiLetter] = useState("");
@@ -192,8 +193,12 @@ export default function App() {
   };
 
   const preparePhotoForDecoration = async (sourceUrl: string) => {
-    setIsRemovingBackground(true);
-    const processedUrl = await removePhotoBackgroundToSkyBlue(sourceUrl);
+    let processedUrl = sourceUrl;
+    if (isBackgroundRemovalEnabled) {
+      setIsRemovingBackground(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+      processedUrl = await removePhotoBackgroundToSkyBlue(sourceUrl);
+    }
     setPhotoUrl(processedUrl);
     
     // Reset base photo alignment sliders
@@ -1679,6 +1684,24 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  triggerSound('click');
+                  setIsBackgroundRemovalEnabled((prev) => !prev);
+                }}
+                disabled={isRemovingBackground || countdown >= 0}
+                className={`mt-4 w-full rounded-xl px-4 py-3 text-sm font-black border-2 shadow-md transition-all active:scale-95 disabled:opacity-60 disabled:active:scale-100 ${
+                  isBackgroundRemovalEnabled
+                    ? "bg-sky-300 hover:bg-sky-200 text-blue-950 border-white"
+                    : "bg-slate-700 hover:bg-slate-600 text-white border-slate-500"
+                }`}
+              >
+                {isBackgroundRemovalEnabled
+                  ? "하늘색 배경 합성 켜짐 - 느리지만 예쁘게"
+                  : "하늘색 배경 합성 꺼짐 - 빠른 촬영/업로드 모드"}
+              </button>
 
               {/* Camera Actions and Fallbacks */}
               <div className="mt-4 flex gap-2.5">
